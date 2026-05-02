@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
 Generate the deblur dataset: download originals, normalize to 512x512 grayscale,
-apply a periodic Gaussian PSF (sigma=2.0) + additive Gaussian noise, and write
-``inputs/<name>.bmp`` (blurred + noisy) and ``expected/<name>.bmp`` (ground truth).
+apply a periodic Gaussian PSF with a per-image random sigma drawn from
+U(SIGMA_MIN, SIGMA_MAX), add white Gaussian noise, and write
+``inputs/<name>.bmp`` (blurred + noisy) and ``expected/<name>.bmp`` (ground
+truth).
 
-The forward model matches what the reference Wiener solver inverts:
+The forward model matches what the reference solver assumes:
 
-    blurred = IFFT( FFT(sharp) * FFT(gaussian_psf) ) + noise
+    blurred = IFFT( FFT(sharp) * FFT(gaussian_psf(sigma_i)) ) + N(0, NOISE_SIGMA)
 
-This is FFT-based *circular* convolution (periodic boundary). It's important
-that participants assume the same forward model in their solvers — the README
-spells this out.
+with ``sigma_i`` drawn deterministically per image from
+``rng(SIGMA_RNG_SEED + i)``. The actual sigmas are printed to stderr for the
+maintainer to verify reference performance — they are NOT shipped with the
+dataset (participants face the problem blind, only knowing the range).
 
 Sources cached locally in ``reference/originals/``. Re-running the script with
 the cache populated skips the network entirely.
@@ -29,10 +32,12 @@ from skimage import data as sk_data
 sys.path.insert(0, str(Path(__file__).parent))
 import bmp_io  # noqa: E402
 
-SIGMA = 2.0
-NOISE_SIGMA = 1.0
+SIGMA_MIN = 1.5
+SIGMA_MAX = 3.5
+NOISE_SIGMA = 2.0
 TARGET_SIZE = 512
-RNG_SEED = 42
+NOISE_RNG_SEED = 42
+SIGMA_RNG_SEED = 7
 
 ROOT = Path(__file__).resolve().parents[1]  # 2026-05-deblur/
 ORIGINALS_DIR = Path(__file__).parent / "originals"
@@ -114,6 +119,11 @@ def gaussian_psf_freq(shape: tuple[int, int], sigma: float) -> np.ndarray:
     return np.fft.fft2(psf)
 
 
+def draw_sigma(i: int) -> float:
+    """Deterministic per-image sigma in [SIGMA_MIN, SIGMA_MAX]."""
+    return float(np.random.default_rng(SIGMA_RNG_SEED + i).uniform(SIGMA_MIN, SIGMA_MAX))
+
+
 def blur_and_noise(sharp: np.ndarray, sigma: float, noise_sigma: float,
                    seed: int) -> np.ndarray:
     H = gaussian_psf_freq(sharp.shape, sigma)
@@ -128,23 +138,28 @@ def main() -> int:
     EXPECTED_DIR.mkdir(parents=True, exist_ok=True)
     INPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    print(f"PSF sigma range: [{SIGMA_MIN}, {SIGMA_MAX}]   noise sigma: {NOISE_SIGMA}",
+          file=sys.stderr)
     written = []
     failed = []
     for i, (slug, src) in enumerate(SOURCES):
+        sigma = draw_sigma(i)
         try:
-            print(f"[{i+1}/{len(SOURCES)}] {slug} ...", flush=True)
+            print(f"[{i+1}/{len(SOURCES)}] {slug}  sigma={sigma:.3f}", flush=True)
             raw = fetch(slug, src)
             sharp = normalize(raw)
-            blurred = blur_and_noise(sharp, SIGMA, NOISE_SIGMA, RNG_SEED + i)
+            blurred = blur_and_noise(sharp, sigma, NOISE_SIGMA, NOISE_RNG_SEED + i)
             bmp_io.write_path(EXPECTED_DIR / f"{slug}.bmp", sharp)
             bmp_io.write_path(INPUTS_DIR / f"{slug}.bmp", blurred)
-            written.append(slug)
+            written.append((slug, sigma))
         except Exception as e:
             print(f"  ! {slug}: skipped ({e})", file=sys.stderr)
             failed.append((slug, str(e)))
 
     print()
-    print(f"wrote {len(written)} cases: {', '.join(written)}")
+    print(f"wrote {len(written)} cases:")
+    for slug, sigma in written:
+        print(f"  {slug:<12s}  sigma={sigma:.3f}")
     if failed:
         print(f"failed {len(failed)}:")
         for slug, msg in failed:

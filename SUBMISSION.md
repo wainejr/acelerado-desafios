@@ -15,11 +15,28 @@ docker run --rm \
   --cpuset-cpus=2,3 --cpus=2 \
   --memory=1g \
   --network=none --read-only \
-  --tmpfs /tmp:rw,size=64m \
-  -i <sua-imagem> < inputs/<caso>.bin > /tmp/out.bin
+  -i <sua-imagem> < inputs/<caso>.bin > out.bin
 ```
 
-Sua solução **lê de stdin**, **escreve em stdout**. Sem argumentos. Sem rede. Sem disco fora de `/tmp`.
+Sua solução:
+
+- **Lê de stdin**, **escreve em stdout**.
+- **Não recebe argumentos.**
+- **Não tem rede** (`--network=none`).
+- **Não tem disco gravável** (`--read-only` sem `--tmpfs`). Filesystem inteiro do
+  container é somente-leitura. Tentar escrever em qualquer arquivo (incluindo
+  `/tmp`, `~/.cache`, `/var/log`, etc.) falha com `EROFS`. Use **memória RAM**
+  pra trabalhar.
+
+Dicas práticas:
+
+- **Python**: rode com `python -B` (ou `PYTHONDONTWRITEBYTECODE=1`) pra não
+  tentar escrever `.pyc`. Bibliotecas que cacheam em `~/.cache` (matplotlib,
+  numba JIT, etc.) podem falhar — pré-construa caches no `Dockerfile`, não em
+  runtime, ou use `numpy` puro.
+- **C/C++ com FFTW**: `fftw_wisdom` por default escreve em arquivo. Use
+  apenas o wisdom embutido no binário ou desligue persistência.
+- **CUDA / GPU**: indisponível no bench (não tem GPU no host).
 
 O formato exato de `inputs/*` e da saída esperada está descrito no `README.md` de cada desafio.
 
@@ -54,7 +71,8 @@ CMD ["/app/solution"]
 ```c
 #include <stdio.h>
 int main(void) {
-    /* ler stdin, processar, escrever stdout */
+    /* ler stdin, processar inteiramente em memória, escrever stdout.
+       Não fopen() pra disco — o container é read-only. */
     return 0;
 }
 ```

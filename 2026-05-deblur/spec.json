@@ -1,6 +1,6 @@
 {
   "name": "deblur",
-  "title": "Deconvolução de Wiener",
+  "title": "Astrofoto da Lua — desfocando o seeing",
   "month": "2026-05",
   "primary_metric": "time_ms",
   "direction": "min",
@@ -12,21 +12,27 @@
   },
   "psf": {
     "type": "gaussian",
-    "sigma": 2.0
+    "sigma_min": 1.5,
+    "sigma_max": 3.5,
+    "note": "blind: per-image sigma drawn uniformly from [sigma_min, sigma_max], not revealed"
   },
   "noise": {
-    "type": "gaussian",
-    "sigma": 1.0
+    "type": "gaussian_white",
+    "sigma": 2.0
   },
   "validation": {
     "metric": "psnr",
-    "min_db": 22.0,
+    "min_db": 21.0,
     "ground_truth_dir": "expected/"
   },
   "caps": {
     "time_ms": 30000,
-    "peak_rss_mb": 1024,
-    "disk_write_mb": 50
+    "peak_rss_mb": 1024
+  },
+  "io": {
+    "stdin": "BMP 24-bit grayscale (R=G=B), 512x512",
+    "stdout": "BMP 24-bit grayscale (R=G=B), 512x512",
+    "writable_filesystem": false
   },
   "bench": {
     "warmup_runs": 1,

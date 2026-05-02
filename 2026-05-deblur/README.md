@@ -1,88 +1,104 @@
-# Maio 2026 — Deconvolução de Wiener (deblur por FFT)
+# Maio 2026 — Astrofoto da Lua: desfocando o seeing
 
-> **TL;DR**: você recebe uma imagem borrada por uma gaussiana 2D conhecida.
-> Tem que devolver a imagem nítida. O ranking é por **tempo de execução**
-> (`time_ms`), com PSNR mínimo de validação. **Quem entrega rápido sem
-> perder qualidade vence.**
+## O cenário
 
-## Contexto real
+Numa quinta à noite em São Paulo, um astrofotógrafo amador monta no quintal um
+**telescópio Newtoniano de 130 mm** com uma **ZWO ASI120MM-S** acoplada — uma
+câmera CMOS monocromática de 1.2 MP, USB 2.0, sem sistema de resfriamento.
+Aponta pra Lua, configura ganho médio, e em 90 segundos captura **3 mil frames
+da cratera Tycho** com exposição de 5 ms cada.
 
-Toda imagem que sai de um sensor real passa por um **borrão**: lente fora de
-foco, mão tremendo, atmosfera turbulenta (astrofotografia), profundidade de
-campo limitada (microscopia). Matematicamente, o sensor registra:
+No software de processamento ele descobre o que todo mundo no hobby já sabe:
+**a maior parte dos frames está borrada**. Cinco a dez por cento das fotos
+saem "tremidas" de um jeito específico — não é a câmera mexendo, é o **ar**.
+
+Entre o telescópio e a Lua existem 100 km de atmosfera turbulenta. Cada
+camada de ar quente subindo, ar frio descendo, vento cisalhando, age como
+uma **lente fraca e mal alinhada** sobre o caminho óptico. O efeito acumulado
+distorce e borra a imagem do mesmo jeito que olhar pra fundo de piscina mexida.
+A galera chama esse fenômeno de **seeing**.
+
+Pra um intervalo de 5 ms, o seeing é bem aproximado por uma **convolução
+2D com uma PSF gaussiana**, com um σ que depende do estado da atmosfera
+**naquele exato instante**. Em uma noite excelente em SP, σ ≈ 1.5 pixels.
+Em uma noite ruim ou perto do horizonte, σ ≈ 3.5 pixels. Frame a frame, o
+σ varia.
+
+Em paralelo, a ASI120MM **mete ruído**. Sem TEC pra esfriar o sensor, a
+leitura de cada pixel adiciona um ruído **branco gaussiano** com σ_n ≈ 2 ADUs
+no domínio 0–255. É o "chiado" que aparece como granulação fina nas áreas
+escuras do disco lunar.
+
+A foto que sai do sensor satisfaz:
 
 ```
-borrado(x, y) = (nítido ⊛ PSF)(x, y) + ruído(x, y)
-```
-
-Onde `⊛` é convolução 2D e o **PSF** (*Point Spread Function*) é a "assinatura"
-do borrão — a forma com que um único ponto de luz aparece na imagem final.
-
-**Recuperar `nítido` a partir de `borrado`, sabendo o PSF, é deconvolução** —
-um problema clássico de processamento de sinais com aplicações em telescópios,
-microscópios, scanners, câmeras de celular (modo retrato), e visão computacional
-embarcada. O algoritmo canônico, e o que vamos usar como mínimo de qualidade
-aqui, é o **filtro de Wiener** no domínio da frequência:
-
-```
-F̂(u, v) = G(u, v) · conj(H(u, v)) / ( |H(u, v)|² + λ )
-nítido_estimado = IFFT( F̂ )
+foto_borrada = nítida ⊛ gaussiana(σ_seeing) + ruído_branco
 ```
 
 Onde:
+- `⊛` é convolução 2D **periódica** (borda da imagem se enrola — o frame
+  é tratado como um toro 512×512)
+- `σ_seeing` é desconhecido pra cada frame, mas **garantido em [1.5, 3.5]**
+- `ruído_branco ~ N(0, σ_n²)` aditivo, com σ_n = 2.0 fixo
 
-- `G = FFT(borrado)`
-- `H = FFT(PSF)`
-- `λ` é uma constante de regularização (proxy do ruído)
+## A tarefa
 
-## O problema
+O astrofotógrafo te paga um café se você devolver o melhor que dá pra fazer
+do frame ruim. Concretamente: **dado um BMP borrado, retornar a estimativa
+da imagem nítida, o mais rápido possível**. Você não conhece o σ_seeing
+daquele frame específico — tem que descobrir ou contornar.
 
-**Forward model** usado para gerar os inputs (cada participante deve assumir o
-mesmo na hora de inverter):
-
-1. PSF = gaussiana 2D periódica com **σ = 2.0** (kernel implícito do tamanho da
-   imagem inteira, normalizado pra somar 1 no domínio espacial — ver "Construir
-   o PSF" abaixo).
-2. Convolução circular (FFT-based, condição de contorno periódica): `F = G · H`.
-3. Ruído aditivo gaussiano com **σ_n = 1.0** (em escala 0–255).
-4. Clipping em `[0, 255]` e quantização para `uint8`.
-
-Sua tarefa: dado `borrado`, devolver uma estimativa de `nítido` que minimize
-o tempo de execução respeitando o threshold de PSNR.
-
-## Contrato de I/O
-
-- **Entrada (stdin)**: arquivo BMP 24-bit, **512×512**, sem compressão,
-  grayscale armazenado como R = G = B em cada pixel. Header de 54 bytes
-  (BITMAPFILEHEADER + BITMAPINFOHEADER), pixels começam no byte 54, linhas
-  armazenadas de baixo pra cima, BGR por pixel. Width 512 → row stride 1536
-  bytes, **sem padding**.
-- **Saída (stdout)**: BMP no exato mesmo formato, mesmas dimensões, com a
-  imagem deblur'd. Pixels fora de `[0, 255]` devem ser clipados antes de
-  escrever em uint8.
-
-Sua solução **não recebe argumentos**. Não tem rede, não pode escrever
-fora de `/tmp`. Veja [`../SUBMISSION.md`](../SUBMISSION.md) pro contrato
-completo do container.
+O desafio é por **tempo**: quem entrega rápido sem perder qualidade de
+recuperação ganha. Detalhes do que conta como "qualidade aceitável" estão em
+[Spec](#spec) abaixo.
 
 ## Spec
 
-```json
-{
-  "primary_metric": "time_ms",
-  "direction": "min",
-  "psf": {"type": "gaussian", "sigma": 2.0},
-  "noise": {"type": "gaussian", "sigma": 1.0},
-  "validation": {"metric": "psnr", "min_db": 22.0},
-  "caps": {"time_ms": 30000, "peak_rss_mb": 1024, "disk_write_mb": 50}
-}
+### Formato de I/O
+
+- **Entrada (stdin)**: BMP 24-bit, **512×512**, sem compressão, grayscale
+  armazenado como R = G = B em cada pixel.
+  - 14 bytes `BITMAPFILEHEADER` + 40 bytes `BITMAPINFOHEADER` = **54 bytes
+    de cabeçalho**, pixels começam no byte 54
+  - Linhas armazenadas **de baixo pra cima**, BGR por pixel
+  - Width 512 → row stride 1536 bytes, **sem padding**
+- **Saída (stdout)**: BMP no exato mesmo formato e dimensões, com a
+  imagem deblur'd. Pixels fora de `[0, 255]` devem ser clipados antes de
+  escrever em `uint8`.
+
+### Sem I/O em arquivo
+
+A solução roda em container Docker com:
+
+```
+--read-only        # filesystem todo somente-leitura
+                   # (sem --tmpfs, sem volume de escrita)
+--network=none     # sem rede
 ```
 
-Detalhes em [`spec.json`](spec.json).
+Sua solução **não pode escrever em nenhum arquivo**. Apenas stdin de leitura,
+stdout/stderr de escrita, memória RAM, e o filesystem somente-leitura do
+próprio container. Tentar escrever em `/tmp`, `~/.cache`, qualquer coisa,
+falha com `EROFS`.
+
+### Modelo direto (forward model)
+
+Cada frame de teste é gerado por:
+
+1. Imagem nítida `nitida` (uint8, 512×512 grayscale)
+2. PSF gaussiana periódica via FFT, com σ_seeing sorteado uniformemente em
+   `[1.5, 3.5]` (semente determinística por imagem; participantes não sabem
+   quais σ saíram).
+3. Convolução circular: `borrada = IFFT( FFT(nítida) · FFT(psf) )`
+4. Ruído branco gaussiano aditivo: `borrada += N(0, 2.0²)`
+5. Clipping em `[0, 255]` e quantização para `uint8` → arquivo BMP
+
+Sua solução assume **exatamente esse modelo**. Convolução periódica (não
+zero-padded), ruído branco com σ_n = 2.0 conhecido.
 
 ### Validação
 
-- **PSNR ≥ 22 dB** contra `expected/<caso>.bmp` em **todos** os casos
+- **PSNR ≥ 21 dB** contra `expected/<caso>.bmp` em **todos** os casos
   (públicos + ocultos). PSNR é calculado como
   `10 · log₁₀(255² / MSE)`, onde MSE é o erro quadrático médio sobre os
   262 144 pixels.
@@ -93,7 +109,6 @@ Detalhes em [`spec.json`](spec.json).
 
 - `time_ms ≤ 30 000` (30 segundos por caso)
 - `peak_rss_mb ≤ 1024` (1 GB de RSS)
-- `disk_write_mb ≤ 50` (escrita em `/tmp`)
 
 Estourar qualquer cap também desclassifica.
 
@@ -103,9 +118,11 @@ Estourar qualquer cap também desclassifica.
 sobre todos os casos pela **mediana das medianas**. Empates desempatados
 pelo timestamp de submissão (mais cedo vence).
 
-## Construir o PSF
+## Construir a PSF (referência)
 
-A PSF gaussiana com σ = 2.0 é construída no domínio da frequência como:
+A PSF gaussiana com um σ específico é construída no domínio da frequência
+como segue (a referência usa numpy; em outras linguagens, reproduzir o
+mesmo layout):
 
 ```python
 import numpy as np
@@ -120,16 +137,36 @@ def gaussian_psf_freq(shape, sigma):
     return np.fft.fft2(psf)
 ```
 
-(Equivalente: kernel gaussiano centrado em `(0, 0)` com periodicidade
-implícita 512 e somado a 1.) Implementações em outras linguagens devem
-reproduzir exatamente esse layout — sob pena de a deconvolução errar a
-fase.
+Equivalente: kernel gaussiano centrado em `(0, 0)` com periodicidade
+implícita 512, normalizado pra somar 1 no domínio espacial. Implementações
+em outras linguagens devem reproduzir esse layout — sob pena de a
+deconvolução errar a fase.
+
+## A referência
+
+Em `reference/wiener.py` mora um solver **intencionalmente burro**: aplica
+o filtro de Wiener com **σ fixo = 2.5** (o ponto médio da faixa). Quando o
+σ verdadeiro é próximo de 2.5 ele sai bem; quando é 1.5 ou 3.5, sofre.
+
+A referência **não estima** σ. Sua solução deve fazer melhor:
+
+- **Estimar σ a partir do espectro de potência** (técnica clássica:
+  `log P(f) ≈ -2π²σ²f² - α log(f) + c`, ajusta linear)
+- **Cepstrum analysis** (aplicável a kernels com zeros — gaussiana não tem,
+  mas variações suavizadas dão pistas)
+- **Sweep paralelo + escolha por métrica de foco** (Laplacian variance,
+  total variation, gradient sparsity)
+- **Métodos iterativos** (Richardson-Lucy, TV-regularizado)
+- **Rede neural** (out of scope esse mês — sem GPU no bench, sem rede)
+
+A regularização `λ` que a referência usa é `0.005`, calibrada pro nível de
+ruído σ_n = 2.0. Você pode (e deve) escolher diferente.
 
 ## Dataset público
 
 9 imagens clássicas de processamento, todas normalizadas para 512×512 em
-escala de cinza. Originais em `reference/originals/` (gerado on-demand
-pelo script de geração; não commitado).
+escala de cinza. Originais em `reference/originals/` (gerado on-demand pelo
+script de geração, não commitado).
 
 | Slug | Imagem | Origem |
 |---|---|---|
@@ -143,24 +180,30 @@ pelo script de geração; não commitado).
 | `couple` | Couple | USC-SIPI 5.2.08 |
 | `stream` | Stream and bridge | USC-SIPI 5.2.10 |
 
-`inputs/<slug>.bmp` — versão borrada + ruidosa. **É o que sua solução lê.**
-`expected/<slug>.bmp` — ground truth. **É contra o que o PSNR é computado.**
+`inputs/<slug>.bmp` é o frame "saído da câmera" (borrado + ruidoso).
+`expected/<slug>.bmp` é o ground truth (a imagem nítida — você não tem
+isso na prática, é só pra você validar localmente).
+
+> **Mandrill** é o caso mais difícil: a textura fina dos pelos do focinho
+> gera ruído de alta frequência onde o seeing comeu o sinal mais útil. A
+> referência passa raspando aqui (PSNR ~21.8 dB). Se você não passar do
+> threshold no mandrill, é onde começar a debugar.
 
 ## Dataset oculto
 
 Existem casos ocultos adicionais que só são revelados quando o desafio
-encerra. Sua solução roda contra eles no benchmark final. Não dá pra
-olhar antes — qualquer estratégia de "decorar a saída" cai aqui.
+encerra. São fotos no mesmo formato, mesmo modelo direto, com σ_seeing
+sorteado da mesma faixa. Sua solução roda contra eles no benchmark final.
 
 ## Como testar localmente
 
-Pré-requisitos: `uv` (Python 3.11+), `docker`.
+Pré-requisitos: `uv` (Python 3.11+), `docker`, `hyperfine`, `jq`.
 
 ```bash
-# Gera o dataset (cache em reference/originals/, faz a parte de rede uma vez)
+# 1. Gerar o dataset (cache em reference/originals/, faz a parte de rede uma vez)
 uv run python 2026-05-deblur/reference/generate.py
 
-# Roda a referência num caso e confere o PSNR
+# 2. Rodar a referência num caso e conferir o PSNR
 uv run python 2026-05-deblur/reference/wiener.py \
     < 2026-05-deblur/inputs/cameraman.bmp \
     > /tmp/cameraman_out.bmp
@@ -168,10 +211,10 @@ uv run python 2026-05-deblur/reference/wiener.py \
 uv run python 2026-05-deblur/reference/score.py \
     /tmp/cameraman_out.bmp \
     2026-05-deblur/expected/cameraman.bmp
-# → algo tipo "29.4321"
+# → algo tipo "26.2221"
 ```
 
-Pra rodar o bench harness na referência (precisa de `docker` + `hyperfine` + `jq`):
+Pra rodar o bench harness contra a referência (precisa de `docker`):
 
 ```bash
 docker build -t acelerado-ref:bench 2026-05-deblur/reference/
@@ -183,12 +226,12 @@ docker build -t acelerado-ref:bench 2026-05-deblur/reference/
 Veja [`../SUBMISSION.md`](../SUBMISSION.md). TL;DR:
 
 1. `solutions/<seu-usuario>/Dockerfile` constrói sua solução
-2. Container lê BMP de stdin, escreve BMP em stdout
+2. Container lê BMP de stdin, escreve BMP em stdout — **sem escrever
+   nenhum arquivo**
 3. PR contra a branch `submissions/<seu-usuario>` ou `main` (público)
 
 ## Atribuição
 
-As imagens do USC-SIPI são distribuídas pela University of Southern
-California, Signal and Image Processing Institute, "for research and
-educational use". O projeto é uma comunidade educacional — agradecemos
-ao SIPI por manter o dataset disponível desde a década de 1970.
+Imagens de teste do **USC-SIPI** (University of Southern California, Signal
+and Image Processing Institute, "for research and educational use") e do
+**MIT** (Cameraman, via `skimage.data`).

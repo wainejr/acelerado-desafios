@@ -60,13 +60,14 @@ for input in "$INPUTS_DIR"/*.bmp; do
 
     echo "==> $case_name"
 
+    # Container is fully read-only — no writable filesystem at all (no tmpfs).
+    # Solution must read stdin and write stdout/stderr only; any file write fails.
     docker_cmd=(
         docker run --rm
         --cidfile "$cid_file"
         --cpuset-cpus="$CPUSET" --cpus="$CPUS"
         --memory="$MEM"
         --network=none --read-only
-        --tmpfs /tmp:rw,size=64m
         -i "$IMAGE_TAG"
     )
 
