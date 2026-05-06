@@ -12,7 +12,7 @@ const IMG_SIZE = SIZE_X * SIZE_Y * BMP_PIXEL_BYTES;
 var IMG_BUFFER: [SIZE_X * SIZE_Y * BMP_PIXEL_BYTES]u8 = undefined;
 const IMG_CHUNK_SIZE = 512;
 
-fn func_img(func: anytype, fd: std.posix.fd_t) !void {
+fn io_img(func: anytype, fd: std.posix.fd_t) !void {
     _ = try func(fd, &BMP_HEADER);
     for (0..IMG_SIZE / IMG_CHUNK_SIZE) |i| {
         const view = IMG_BUFFER[i * IMG_CHUNK_SIZE .. (i + 1) * IMG_CHUNK_SIZE];
@@ -25,6 +25,6 @@ fn func_img(func: anytype, fd: std.posix.fd_t) !void {
 }
 
 pub fn main() !void {
-    try func_img(std.posix.read, std.posix.STDIN_FILENO);
-    try func_img(std.posix.write, std.posix.STDOUT_FILENO);
+    try io_img(std.posix.read, std.posix.STDIN_FILENO);
+    try io_img(std.posix.write, std.posix.STDOUT_FILENO);
 }
