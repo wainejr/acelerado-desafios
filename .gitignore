@@ -21,9 +21,13 @@ __pycache__/
 
 # Build artifacts
 *.o
+*.a
 *.exe
 target/
 build/
+zig-out/
+zig-cache/
+.zig-cache/
 
 # Astro / site build
 node_modules/
