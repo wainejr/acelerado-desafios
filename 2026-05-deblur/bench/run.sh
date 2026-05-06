@@ -56,15 +56,13 @@ for input in "$INPUTS_DIR"/*.bmp; do
     expected="$EXPECTED_DIR/${case_name}.bmp"
     out="$TMP_DIR/${case_name}.out.bmp"
     hf_json="$TMP_DIR/${case_name}.hf.json"
-    cid_file="$TMP_DIR/${case_name}.cid"
 
     echo "==> $case_name"
 
-    # Container is fully read-only — no writable filesystem at all (no tmpfs).
+    # Container is fully read-only - no writable filesystem at all (no tmpfs).
     # Solution must read stdin and write stdout/stderr only; any file write fails.
     docker_cmd=(
         docker run --rm
-        --cidfile "$cid_file"
         --cpuset-cpus="$CPUSET" --cpus="$CPUS"
         --memory="$MEM"
         --network=none --read-only
@@ -72,21 +70,22 @@ for input in "$INPUTS_DIR"/*.bmp; do
     )
 
     # Single measured run captures stdout (the deblurred BMP) for validation.
-    rm -f "$cid_file"
     "${docker_cmd[@]}" < "$input" > "$out"
 
     # Validate PSNR.
     psnr=$(uv run python "$SCORE_PY" "$out" "$expected")
     valid=$(awk -v p="$psnr" -v t="$PSNR_MIN" 'BEGIN { print (p+0 >= t+0) ? "true" : "false" }')
 
-    # Timing via hyperfine — separate runs, output redirected to /dev/null.
+    # Timing via hyperfine - separate runs. Hyperfine's default --output=null
+    # already discards the container's stdout (the BMP); a shell-level redirect
+    # would not be interpreted under --shell=none.
     hyperfine \
         --warmup "$WARMUP" \
         --runs "$RUNS" \
         --shell=none \
         --export-json "$hf_json" \
         --input "$input" \
-        -- "${docker_cmd[*]} > /dev/null" \
+        -- "${docker_cmd[*]}" \
         >/dev/null
 
     median_s=$(jq -r '.results[0].median' "$hf_json")
