@@ -1,0 +1,4 @@
+solution
+*.o
+*.a
+*.out
