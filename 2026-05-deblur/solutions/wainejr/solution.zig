@@ -24,7 +24,30 @@ fn io_img(func: anytype, fd: std.posix.fd_t) !void {
     }
 }
 
+/// Run FFT on img for processing
+fn img_fft() !void {}
+
+/// Run inverse FFT on img
+fn img_ifft() !void {}
+
+/// Estimate sigma of img
+fn img_sigma_estimator() !void {}
+
+/// Run deblur filter based on the estimations done
+fn img_deblur_filter() !void {}
+
+/// reduce white noise in image
+fn img_noise_reducer() !void {}
+
 pub fn main() !void {
     try io_img(std.posix.read, std.posix.STDIN_FILENO);
+
+    try img_noise_reducer();
+
+    try img_fft();
+    try img_sigma_estimator();
+    try img_deblur_filter();
+    try img_ifft();
+
     try io_img(std.posix.write, std.posix.STDOUT_FILENO);
 }
